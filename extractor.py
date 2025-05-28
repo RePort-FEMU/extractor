@@ -16,7 +16,15 @@ import tempfile
 import traceback
 
 import magic
-import binwalk
+
+from binwalkInterface import runBinwalk
+
+headerSignatures = ["binhdr", "chk", "dlob", "jboot_arm", "jboot_sch2", "jboot_stag", "luks", "packimg", "rtk", "seama", "tplink"]
+kernelSignatures = ["linux_arm64_boot_image", "linux_boot_image", "linux_kernel", "wind_kernel"]
+rootfsSignatures = ["cramfs", "ext", "fat", "jffs2", "romfs", "yaffs", "apfs", "squashfs", "btrfs"]
+ubiSignatures    = ["ubi", "ubifs"]
+compressedSignatures = ["zstd", "zlib", "xz", "gzip", "bzip2", "lzop", "lzma", "lzfse", "lz4", "compressd"]
+archiveSignatures = ["zip", "rar", "tarball", "cab", "cpio", "7zip"]
 
 class Extractor(object):
     """
@@ -476,7 +484,7 @@ class ExtractionItem(object):
         If this file is an archive, recurse over its contents, unless it matches
         an extracted root filesystem.
         """
-        return self._check_recursive("archive")
+        return self._check_recursive(archiveSignatures)
 
     def _check_encryption(self):
         header = b""
@@ -497,89 +505,87 @@ class ExtractionItem(object):
         If this file is of a known firmware type, directly attempt to extract
         the kernel and root filesystem.
         """
-        for module in binwalk.scan(self.item, "-y", "header", "--run-as=root", "--preserve-symlinks",
-                                   signature=True, quiet=True):
-            for entry in module.results:
-                # uImage
-                if "uImage header" in entry.description:
-                    if not self.get_kernel_status() and \
-                        "OS Kernel Image" in entry.description:
-                        kernel_offset = entry.offset + 64
-                        kernel_size = 0
-
-                        for stmt in entry.description.split(','):
-                            if "image size:" in stmt:
-                                kernel_size = int(''.join(
-                                    i for i in stmt if i.isdigit()), 10)
-
-                        if kernel_size != 0 and kernel_offset + kernel_size \
-                            <= os.path.getsize(self.item):
-                            self.printf(">>>> %s" % entry.description)
-
-                            tmp_fd, tmp_path = tempfile.mkstemp(dir=self.temp)
-                            os.close(tmp_fd)
-                            Extractor.io_dd(self.item, kernel_offset,
-                                            kernel_size, tmp_path)
-                            kernel = ExtractionItem(self.extractor, tmp_path,
-                                                    self.depth, self.tag)
-
-                            return kernel.extract()
-                    # elif "RAMDisk Image" in entry.description:
-                    #     self.printf(">>>> %s" % entry.description)
-                    #     self.printf(">>>> Skipping: RAMDisk / initrd")
-                    #     self.terminate = True
-                    #     return True
-
-                # TP-Link or TRX
-                elif not self.get_kernel_status() and \
-                    not self.get_rootfs_status() and \
-                    "rootfs offset: " in entry.description and \
-                    "kernel offset: " in entry.description:
-                    kernel_offset = 0
+        for entry in runBinwalk(self.item, includeSignatures=headerSignatures):
+            # uImage
+            if "uImage header" in entry.description:
+                if not self.get_kernel_status() and \
+                    "OS Kernel Image" in entry.description:
+                    kernel_offset = entry.offset + 64
                     kernel_size = 0
-                    rootfs_offset = 0
-                    rootfs_size = 0
 
                     for stmt in entry.description.split(','):
-                        if "kernel offset:" in stmt:
-                            kernel_offset = int(stmt.split(':')[1], 16)
-                        elif "kernel length:" in stmt:
-                            kernel_size = int(stmt.split(':')[1], 16)
-                        elif "rootfs offset:" in stmt:
-                            rootfs_offset = int(stmt.split(':')[1], 16)
-                        elif "rootfs length:" in stmt:
-                            rootfs_size = int(stmt.split(':')[1], 16)
+                        if "image size:" in stmt:
+                            kernel_size = int(''.join(
+                                i for i in stmt if i.isdigit()), 10)
 
-                    # compute sizes if only offsets provided
-                    if kernel_offset != rootfs_size and kernel_size == 0 and \
-                        rootfs_size == 0:
-                        kernel_size = rootfs_offset - kernel_offset
-                        rootfs_size = os.path.getsize(self.item) - rootfs_offset
-
-                    # ensure that computed values are sensible
-                    if (kernel_size > 0 and kernel_offset + kernel_size \
-                        <= os.path.getsize(self.item)) and \
-                        (rootfs_size != 0 and rootfs_offset + rootfs_size \
-                            <= os.path.getsize(self.item)):
+                    if kernel_size != 0 and kernel_offset + kernel_size \
+                        <= os.path.getsize(self.item):
                         self.printf(">>>> %s" % entry.description)
 
                         tmp_fd, tmp_path = tempfile.mkstemp(dir=self.temp)
                         os.close(tmp_fd)
-                        Extractor.io_dd(self.item, kernel_offset, kernel_size,
-                                        tmp_path)
+                        Extractor.io_dd(self.item, kernel_offset,
+                                        kernel_size, tmp_path)
                         kernel = ExtractionItem(self.extractor, tmp_path,
                                                 self.depth, self.tag)
-                        kernel.extract()
 
-                        tmp_fd, tmp_path = tempfile.mkstemp(dir=self.temp)
-                        os.close(tmp_fd)
-                        Extractor.io_dd(self.item, rootfs_offset, rootfs_size,
-                                        tmp_path)
-                        rootfs = ExtractionItem(self.extractor, tmp_path,
-                                                self.depth, self.tag)
-                        rootfs.extract()
+                        return kernel.extract()
+                # elif "RAMDisk Image" in entry.description:
+                #     self.printf(">>>> %s" % entry.description)
+                #     self.printf(">>>> Skipping: RAMDisk / initrd")
+                #     self.terminate = True
+                #     return True
 
-                        return self.update_status()
+            # TP-Link or TRX
+            elif not self.get_kernel_status() and \
+                not self.get_rootfs_status() and \
+                "rootfs offset: " in entry.description and \
+                "kernel offset: " in entry.description:
+                kernel_offset = 0
+                kernel_size = 0
+                rootfs_offset = 0
+                rootfs_size = 0
+
+                for stmt in entry.description.split(','):
+                    if "kernel offset:" in stmt:
+                        kernel_offset = int(stmt.split(':')[1], 16)
+                    elif "kernel length:" in stmt:
+                        kernel_size = int(stmt.split(':')[1], 16)
+                    elif "rootfs offset:" in stmt:
+                        rootfs_offset = int(stmt.split(':')[1], 16)
+                    elif "rootfs length:" in stmt:
+                        rootfs_size = int(stmt.split(':')[1], 16)
+
+                # compute sizes if only offsets provided
+                if kernel_offset != rootfs_size and kernel_size == 0 and \
+                    rootfs_size == 0:
+                    kernel_size = rootfs_offset - kernel_offset
+                    rootfs_size = os.path.getsize(self.item) - rootfs_offset
+
+                # ensure that computed values are sensible
+                if (kernel_size > 0 and kernel_offset + kernel_size \
+                    <= os.path.getsize(self.item)) and \
+                    (rootfs_size != 0 and rootfs_offset + rootfs_size \
+                        <= os.path.getsize(self.item)):
+                    self.printf(">>>> %s" % entry.description)
+
+                    tmp_fd, tmp_path = tempfile.mkstemp(dir=self.temp)
+                    os.close(tmp_fd)
+                    Extractor.io_dd(self.item, kernel_offset, kernel_size,
+                                    tmp_path)
+                    kernel = ExtractionItem(self.extractor, tmp_path,
+                                            self.depth, self.tag)
+                    kernel.extract()
+
+                    tmp_fd, tmp_path = tempfile.mkstemp(dir=self.temp)
+                    os.close(tmp_fd)
+                    Extractor.io_dd(self.item, rootfs_offset, rootfs_size,
+                                    tmp_path)
+                    rootfs = ExtractionItem(self.extractor, tmp_path,
+                                            self.depth, self.tag)
+                    rootfs.extract()
+
+                    return self.update_status()
         return False
 
     def _check_kernel(self):
@@ -588,23 +594,21 @@ class ExtractionItem(object):
         Only Linux kernels are currently extracted.
         """
         if not self.get_kernel_status():
-            for module in binwalk.scan(self.item, "-y", "kernel", "--run-as=root", "--preserve-symlinks",
-                                       signature=True, quiet=True):
-                for entry in module.results:
-                    if "kernel version" in entry.description:
-                        self.update_database("kernel_version",
-                                             entry.description)
-                        if "Linux" in entry.description:
-                            if self.get_kernel_path():
-                                shutil.copy(self.item, self.get_kernel_path())
-                            else:
-                                self.extractor.do_kernel = False
-                            self.printf(">>>> %s" % entry.description)
-                            return True
-                        # VxWorks, etc
+            for entry in runBinwalk(self.item, includeSignatures=kernelSignatures):
+                if "kernel version" in entry.description or "Linux version" in entry.description:
+                    self.update_database("kernel_version",
+                                            entry.description)
+                    if "Linux" in entry.description:
+                        if self.get_kernel_path():
+                            shutil.copy(self.item, self.get_kernel_path())
                         else:
-                            self.printf(">>>> Ignoring: %s" % entry.description)
-                            return False
+                            self.extractor.do_kernel = False
+                        self.printf(">>>> %s" % entry.description)
+                        return True
+                    # VxWorks, etc
+                    else:
+                        self.printf(">>>> Ignoring: %s" % entry.description)
+                        return False
                 return False
         return False
 
@@ -615,15 +619,9 @@ class ExtractionItem(object):
 
         if not self.get_rootfs_status():
             # work-around issue with binwalk signature definitions for ubi
-            for module in binwalk.scan(self.item, "-e", "-r", "-y",
-                                       "filesystem", "-y", "ubi", "--run-as=root", "--preserve-symlinks", 
-                                       signature=True, quiet=True):
-                for entry in module.results:
-                    self.printf(">>>> %s" % entry.description)
-                    break
-
-                if module.extractor.directory:
-                    unix = Extractor.io_find_rootfs(module.extractor.directory)
+            for entry in runBinwalk(self.item, extract=True, includeSignatures=ubiSignatures + rootfsSignatures, outputDirectory=str(self.temp)):
+                if entry.extractionDetails and entry.extractionDetails.success:
+                    unix = Extractor.io_find_rootfs(entry.extractionDetails.outputDir)
 
                     if not unix[0]:
                         return False
@@ -642,7 +640,7 @@ class ExtractionItem(object):
         If this file appears to be compressed, decompress it and recurse over
         its contents.
         """
-        return self._check_recursive("compressed")
+        return self._check_recursive(compressedSignatures)
 
     # treat both archived and compressed files using the same pathway. this is
     # because certain files may appear as e.g. "xz compressed data" but still
@@ -654,21 +652,20 @@ class ExtractionItem(object):
         """
         desc = None
         # perform extraction
-        for module in binwalk.scan(self.item, "-e", "-r", "-y", fmt, "--run-as=root", "--preserve-symlinks",
-                                   signature=True, quiet=True):
-            for entry in module.results:
+        for entry in runBinwalk(self.item, extract=True, includeSignatures=fmt, outputDirectory=str(self.temp)):
+            # for entry in module.results:
                 # skip cpio/initrd files since they should be included with
                 # kernel
                 # if "cpio archive" in entry.description:
                 #     self.printf(">> Skipping: cpio: %s" % entry.description)
                 #     self.terminate = True
                 #     return True
-                desc = entry.description
-                self.printf(">>>> %s" % entry.description)
-                break
-
-            if module.extractor.directory:
-                unix = Extractor.io_find_rootfs(module.extractor.directory)
+                # desc = entry.description
+                # self.printf(">>>> %s" % entry.description)
+                # break
+            desc = entry.description
+            if entry.extractionDetails and entry.extractionDetails.success:
+                unix = Extractor.io_find_rootfs(entry.extractionDetails.outputDir)
 
                 # check for extracted filesystem, otherwise update queue
                 if unix[0]:
@@ -682,7 +679,7 @@ class ExtractionItem(object):
                 else:
                     count = 0
                     self.printf(">> Recursing into %s ..." % fmt)
-                    for root, _, files in os.walk(module.extractor.directory):
+                    for root, _, files in os.walk(entry.extractionDetails.outputDir):
                         # sort both descending alphabetical and increasing
                         # length
                         files.sort()
