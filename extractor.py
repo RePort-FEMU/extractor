@@ -183,7 +183,7 @@ class Extractor(object):
 
         return (False, start)
 
-    def extract(self):
+    def extract(self) -> list[dict[str, bool | str | None]]:
         """
         Perform extraction of firmware updates from input to tarballs in output
         directory using a thread pool.
@@ -409,7 +409,7 @@ class ExtractionItem(object):
         """
         return self.output + ".tar.gz" if self.output else None
 
-    def extract(self):
+    def extract(self) -> dict[str, bool | str | None]:
         """
         Perform the actual extraction of firmware updates, recursively. Returns
         True if extraction complete, otherwise False.
@@ -760,14 +760,30 @@ class ExtractionItem(object):
                             count += 1
         return False
 
-def extract(input_file, output_dir=None, rootfs=True, kernel=True,
-            numproc=False, sqlIP=None, brand=None, port=5432, quiet=False):
+def extract(input_file, output_dir=None, filesystem=True, kernel=True,
+            numproc=False, brand=None, sqlIP=None,  sqlPort=5432, quiet=False) -> list[dict[str, bool | str | None]]:
     """
     Extracts the kernel and root filesystem from a given input file or
     directory to the specified output directory.
+    
+    :param input_file: Path to the input file or directory.
+    :param output_dir: Path to the output directory where extracted files will
+        be saved. If None, no output directory is created.
+    :param filesystem: Whether to extract the root filesystem.
+    :param kernel: Whether to extract the kernel.
+    :param numproc: Whether to use multiprocessing for extraction.
+    :param brand: Brand of the firmware image.
+    :param sqlIP: Hostname of the SQL server to store extraction details.
+    :param sqlPort: Port of the SQL server.
+    :param quiet: If True, suppresses output messages.  
+    
+    :return: A list of dictionaries containing extraction results, each with
+        keys 'status', 'tag', 'kernelDone', 'rootfsDone', 'kernelPath',
+        and 'rootfsPath'.
+    
     """
-    extractor = Extractor(input_file, output_dir, rootfs, kernel, numproc,
-                          sqlIP, brand, port, quiet)
+    extractor = Extractor(input_file, output_dir, filesystem, kernel, numproc,
+                          sqlIP, brand, sqlPort, quiet)
     return extractor.extract()
 
 def main():
