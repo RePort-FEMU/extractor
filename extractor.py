@@ -778,8 +778,13 @@ def extract(input_file, output_dir=None, filesystem=True, kernel=True,
     :param quiet: If True, suppresses output messages.  
     
     :return: A list of dictionaries containing extraction results, each with
-        keys 'status', 'tag', 'kernelDone', 'rootfsDone', 'kernelPath',
-        and 'rootfsPath'.
+        keys:
+        - status: True if extraction is complete, False otherwise
+        - tag: Unique identifier for the extraction item
+        - kernelDone: True if kernel extraction is complete or not requested, False otherwise
+        - rootfsDone: True if root filesystem extraction is complete or not requested, False otherwise
+        - kernelPath: Path to the extracted kernel file, or None if not extracted
+        - rootfsPath: Path to the extracted root filesystem file, or None if not extracted
     
     """
     extractor = Extractor(input_file, output_dir, filesystem, kernel, numproc,
