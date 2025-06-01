@@ -466,8 +466,6 @@ class ExtractionItem(object):
             for analysis in [self._check_archive, self._check_encryption, self._check_firmware,
                              self._check_kernel, self._check_rootfs,
                              self._check_compressed]:
-                # Move to temporary directory so binwalk does not write to input
-                os.chdir(self.temp)
 
                 # Update status only if analysis changed state
                 if analysis():
