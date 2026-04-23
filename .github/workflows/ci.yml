@@ -24,13 +24,13 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Install maturin
+      - name: Install build tools
         run: pip install "maturin[patchelf]"
 
       - name: Build and install package
-        run: maturin develop
+        run: pip install . --no-build-isolation
 
-      - name: Install Python dependencies
+      - name: Install remaining dependencies
         run: pip install python-magic psycopg2-binary
 
       - name: Smoke test - import and scan
