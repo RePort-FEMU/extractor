@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install maturin
+        run: pip install "maturin[patchelf]"
+
+      - name: Build and install package
+        run: maturin develop
+
+      - name: Install Python dependencies
+        run: pip install python-magic psycopg2-binary
+
+      - name: Smoke test - import and scan
+        run: |
+          python - <<'EOF'
+          from femu_extractor import runBinwalk, Extractor, extract
+
+          # Verify signature filtering works
+          results = runBinwalk("/bin/ls")
+          assert len(results) > 0, "Expected at least one signature match in /bin/ls"
+
+          filtered = runBinwalk("/bin/ls", includeSignatures=["elf"])
+          assert len(filtered) == 1, f"Expected exactly 1 ELF match, got {len(filtered)}"
+          assert "ELF" in filtered[0].description, "Expected ELF in description"
+
+          excluded = runBinwalk("/bin/ls", excludeSignatures=["elf"])
+          assert len(excluded) == len(results) - 1, "Exclude filter did not remove ELF entry"
+
+          print(f"OK: scan returned {len(results)} results, filters work correctly")
+          EOF
+
+      - name: Smoke test - extraction
+        run: |
+          python - <<'EOF'
+          import tempfile, os, gzip
+          from femu_extractor import extract
+
+          # Create a minimal gzip file to extract
+          with tempfile.NamedTemporaryFile(suffix=".gz", delete=False) as f:
+              with gzip.open(f.name, "wb") as gz:
+                  gz.write(b"hello firmware world")
+              input_path = f.name
+
+          outdir = tempfile.mkdtemp()
+          results = extract(input_path, output_dir=outdir, kernel=False, quiet=True)
+
+          assert len(results) == 1, f"Expected 1 result, got {len(results)}"
+          result = results[0]
+          assert "tag" in result
+          assert "status" in result
+
+          print(f"OK: extraction result: status={result['status']} tag={result['tag']}")
+          os.unlink(input_path)
+          EOF
