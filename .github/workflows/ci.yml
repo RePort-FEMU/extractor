@@ -24,6 +24,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      - name: Install system dependencies
+        run: sudo apt-get install -y libfontconfig1-dev
+
       - name: Install build tools
         run: pip install "maturin[patchelf]"
 
