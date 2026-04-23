@@ -33,6 +33,17 @@ pub fn run_binwalk(
                 .unwrap_or_else(|| ".".to_string())
         });
 
+        // configure() creates a symlink <outdir>/<filename> -> target file.
+        // If runBinwalk is called multiple times on the same file with the same
+        // output dir (e.g. archive pass then rootfs pass), the second call fails
+        // because the symlink already exists. Remove it first.
+        if let Some(fname) = file_path_buf.file_name() {
+            let symlink = PathBuf::from(&outdir).join(fname);
+            if symlink.is_symlink() {
+                let _ = fs::remove_file(&symlink);
+            }
+        }
+
         let binwalker = Binwalk::configure(
             Some(file_path.clone()),
             Some(outdir),
