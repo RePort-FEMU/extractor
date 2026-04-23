@@ -5,6 +5,7 @@ from femu_extractor._lib import run_binwalk as rust_run_binwalk
 # Re-export classes for backward compatibility
 __all__ = ['DetectedFile', 'ExtractedFile', 'runBinwalk', 'checkFile', 'checkOutputDirectory']
 
+logger = logging.getLogger(__name__)
 
 class ExtractedFile:
     """Details about the extraction of a detected file"""
@@ -44,14 +45,14 @@ def checkFile(filePath: str) -> bool:
     :return: True if the file exists and is readable, False otherwise.
     """
     if not os.path.isfile(filePath):
-        logging.error(f"File not found: {filePath}")
+        logger.error(f"File not found: {filePath}")
         return False
     
     # Get full path of file 
     fullPath = os.path.abspath(filePath)
     # Check that the user has read permissions on the file
     if not os.access(fullPath, os.R_OK):
-        logging.error(f"User does not have read permissions on file: {fullPath}")
+        logger.error(f"User does not have read permissions on file: {fullPath}")
         return False
     
     return True
@@ -65,11 +66,11 @@ def checkOutputDirectory(outputDirectory: str) -> bool:
     :return: True if the directory exists and is writable, False otherwise.
     """
     if not os.path.isdir(outputDirectory):
-        logging.error(f"Output directory does not exist: {outputDirectory}")
+        logger.error(f"Output directory does not exist: {outputDirectory}")
         return False
     
     if not os.access(outputDirectory, os.W_OK):
-        logging.error(f"User does not have write permissions on the output directory: {outputDirectory}")
+        logger.error(f"User does not have write permissions on the output directory: {outputDirectory}")
         return False
     
     return True
@@ -147,6 +148,6 @@ def runBinwalk(
         return detected_files
         
     except Exception as e:
-        logging.error(f"Binwalk analysis failed: {e}")
+        logger.error(f"Binwalk analysis failed: {e}")
         raise RuntimeError(f"Binwalk analysis failed: {e}") from e
 

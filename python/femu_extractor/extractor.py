@@ -8,6 +8,7 @@ e.g. 'extractor.py <input> <output>'.
 
 import argparse
 import hashlib
+import logging
 import multiprocessing
 import os
 from stat import S_ISREG
@@ -16,6 +17,8 @@ import tempfile
 import traceback
 
 import magic
+
+logger = logging.getLogger(__name__)
 
 from .binwalkInterface import runBinwalk
 
@@ -146,7 +149,7 @@ class Extractor(object):
         """
         Internal function used by '_rm' to print out errors.
         """
-        print(("!! %s: Cannot delete %s!\n%s" % (function, path, excinfo)))
+        logger.error("!! %s: Cannot delete %s!\n%s", function, path, excinfo)
 
     @staticmethod
     def io_find_rootfs(start, recurse=True):
@@ -195,7 +198,7 @@ class Extractor(object):
         elif os.path.isfile(self._input):
             self._list.append(self._input)
         else:
-            print("!! Cannot read file: %s" % (self._input,))
+            logger.error("!! Cannot read file: %s", self._input)
 
         if self.output_dir and not os.path.isdir(self.output_dir):
             os.makedirs(self.output_dir)
@@ -254,8 +257,7 @@ class ExtractionItem(object):
                                                 port=self.extractor.port)
             except Exception:
                 self.database = None
-                print("!! Cannot connect to database %s:%d!" % \
-                        (self.extractor.database, self.extractor.port))
+                logger.error("!! Cannot connect to database %s:%d!", self.extractor.database, self.extractor.port)
         else:
             self.database = None
 
@@ -288,7 +290,7 @@ class ExtractionItem(object):
         """
         if self.extractor.quiet:
             return
-        print(("\t" * self.depth + fmt))
+        logger.debug("%s%s", "\t" * self.depth, fmt)
 
     def generate_tag(self):
         """
@@ -531,7 +533,7 @@ class ExtractionItem(object):
             header = f.read(4)
 
         if header == b"SHRS":
-            print(">>>> Found D-Link encrypted firmware in %s!" % (self.item))
+            self.printf(">>>> Found D-Link encrypted firmware in %s!" % (self.item))
 
             # Source: https://github.com/0xricksanchez/dlink-decrypt
             command = 'dd if=%s skip=1756 iflag=skip_bytes status=none | openssl aes-128-cbc -d -nopad -nosalt -K "c05fbf1936c99429ce2a0781f08d6ad8" -iv "67c6697351ff4aec29cdbaabf2fbe346" --nosalt -in /dev/stdin -out %s > /dev/null 2>&1' % (self.item, os.path.join(self.temp, "dlink_decrypt"))
