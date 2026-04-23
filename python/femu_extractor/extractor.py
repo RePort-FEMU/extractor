@@ -17,7 +17,7 @@ import traceback
 
 import magic
 
-from binwalkInterface import runBinwalk
+from .binwalkInterface import runBinwalk
 
 headerSignatures = ["binhdr", "chk", "dlob", "jboot_arm", "jboot_sch2", "jboot_stag", "luks", "packimg", "rtk", "seama", "tplink"]
 kernelSignatures = ["linux_arm64_boot_image", "linux_boot_image", "linux_kernel", "wind_kernel"]
