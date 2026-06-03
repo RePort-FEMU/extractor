@@ -46,7 +46,7 @@ class Extractor(object):
     visited_lock = multiprocessing.Lock()
 
     def __init__(self, indir, outdir=None, rootfs=True, kernel=True,
-                 numproc=True, server=None, brand=None, port=5432, quiet=False):
+                 numproc=True, quiet=False):
         # Input firmware update file or directory
         self._input = os.path.abspath(indir)
         # Output firmware directory
@@ -58,21 +58,13 @@ class Extractor(object):
         # Whether to attempt to extract root filesystem
         self.do_rootfs = rootfs
 
-        # Brand of the firmware
-        self.brand = brand
-
-        # Hostname of SQL server
-        self.database = server
-        self.port = port
-
         # Worker pool.
         self._pool = multiprocessing.Pool() if numproc else None
 
         # Set containing MD5 checksums of visited items
         self.visited = set()
 
-        # List containing tagged items to extract as 2-tuple: (tag [e.g. MD5],
-        # path)
+        # List of items to extract
         self._list = list()
         
         self.quiet = quiet
@@ -233,7 +225,7 @@ class ExtractionItem(object):
     RECURSION_BREADTH = 5
     RECURSION_DEPTH = 3
 
-    def __init__(self, extractor, path, depth, tag=None):
+    def __init__(self, extractor, path, depth, output=None):
         # Temporary directory
         self.temp = None
 
@@ -246,30 +238,15 @@ class ExtractionItem(object):
         # File path
         self.item = path
 
-        # Database connection
-        if self.extractor.database:
-            import psycopg2
-            try:
-                self.database = psycopg2.connect(database="firmware",
-                                                user="femu",
-                                                password="femu",
-                                                host=self.extractor.database,
-                                                port=self.extractor.port)
-            except Exception:
-                self.database = None
-                logger.error("!! Cannot connect to database %s:%d!", self.extractor.database, self.extractor.port)
-        else:
-            self.database = None
-
         # Checksum
         self.checksum = Extractor.io_md5(path)
 
-        # Tag
-        self.tag = tag if tag else self.generate_tag()
-
         # Output file path and filename prefix
-        self.output = os.path.join(self.extractor.output_dir, self.tag) if \
-                                   self.extractor.output_dir else None
+        self.output = output if output else (
+            os.path.join(self.extractor.output_dir,
+                         os.path.basename(path) + "_" + self.checksum)
+            if self.extractor.output_dir else None
+        )
 
         # Status, with terminate indicating early termination for this item
         self.terminate = False
@@ -277,9 +254,6 @@ class ExtractionItem(object):
         self.update_status()
 
     def __del__(self):
-        if self.database:
-            self.database.close()
-
         if self.temp:
             self.printf(">> Cleaning up %s..." % self.temp)
             Extractor.io_rm(self.temp)
@@ -292,51 +266,6 @@ class ExtractionItem(object):
             return
         logger.debug("%s%s", "\t" * self.depth, fmt)
 
-    def generate_tag(self):
-        """
-        Generate the filename tag.
-        """
-        if not self.database:
-            return os.path.basename(self.item) + "_" + self.checksum
-
-        cur = None
-        image_id = None
-        try:
-            image_id = None
-            cur = self.database.cursor()
-            if self.extractor.brand:
-                brand = self.extractor.brand
-            else:
-                brand = "unknown"
-            cur.execute("SELECT id FROM brand WHERE name=%s", (brand, ))
-            brand_id = cur.fetchone()
-            if not brand_id:
-                cur.execute("INSERT INTO brand (name) VALUES (%s) RETURNING id",
-                            (brand, ))
-                brand_id = cur.fetchone()
-            if brand_id:
-                cur.execute("SELECT id FROM image WHERE hash=%s",
-                            (self.checksum, ))
-                image_id = cur.fetchone()
-                if not image_id:
-                    cur.execute("INSERT INTO image (filename, brand_id, hash) \
-                                VALUES (%s, %s, %s) RETURNING id",
-                                (os.path.basename(self.item), brand_id[0],
-                                 self.checksum))
-                    image_id = cur.fetchone()
-            self.database.commit()
-        except BaseException:
-            traceback.print_exc()
-            self.database.rollback()
-        finally:
-            if cur:
-                cur.close()
-
-        if image_id:
-            self.printf(">> Database Image ID: %s" % image_id[0])
-
-        return str(image_id[0]) if \
-               image_id else os.path.basename(self.item) + "_" + self.checksum
 
     def get_kernel_status(self):
         """
@@ -362,34 +291,7 @@ class ExtractionItem(object):
             not self.extractor.do_rootfs
         self.status = (kernel_done, rootfs_done)
 
-        if self.database and kernel_done and self.extractor.do_kernel:
-            self.update_database("kernel_extracted", "True")
-
-        if self.database and rootfs_done and self.extractor.do_rootfs:
-            self.update_database("rootfs_extracted", "True")
-
         return self.get_status()
-
-    def update_database(self, field, value):
-        """
-        Update a given field in the database.
-        """
-        ret = True
-        if self.database:
-            cur = None
-            try:
-                cur = self.database.cursor()
-                cur.execute("UPDATE image SET " + field + "='" + value +
-                            "' WHERE id=%s", (self.tag, ))
-                self.database.commit()
-            except BaseException:
-                ret = False
-                traceback.print_exc()
-                self.database.rollback()
-            finally:
-                if cur:
-                    cur.close()
-        return ret
 
     def get_status(self):
         """
@@ -421,14 +323,14 @@ class ExtractionItem(object):
         # check if item is complete
         if self.get_status():
             self.printf(">> Skipping: completed!")
-            return {"status": True, "tag": self.tag, "kernelDone": self.get_kernel_status(),
+            return {"status": True, "kernelDone": self.get_kernel_status(),
                     "rootfsDone": self.get_rootfs_status(), "kernelPath": self.get_kernel_path(),
                     "rootfsPath": self.get_rootfs_path()}
 
         # check if exceeding recursion depth
         if self.depth > ExtractionItem.RECURSION_DEPTH:
             self.printf(">> Skipping: recursion depth %d" % self.depth)
-            return {"status": self.get_status(), "tag": self.tag, "kernelDone": self.get_kernel_status(),
+            return {"status": self.get_status(), "kernelDone": self.get_kernel_status(),
                     "rootfsDone": self.get_rootfs_status(), "kernelPath": self.get_kernel_path(),
                     "rootfsPath": self.get_rootfs_path()}
 
@@ -437,7 +339,7 @@ class ExtractionItem(object):
         with Extractor.visited_lock:
             if self.checksum in self.extractor.visited:
                 self.printf(">> Skipping: %s..." % self.checksum)
-                return {"status": self.get_status(), "tag": self.tag,
+                return {"status": self.get_status(),
                         "kernelDone": self.get_kernel_status(),
                         "rootfsDone": self.get_rootfs_status(),
                         "kernelPath": self.get_kernel_path(),
@@ -447,7 +349,7 @@ class ExtractionItem(object):
 
         # check if filetype is blacklisted
         if self._check_blacklist():
-            return {"status": self.get_status(), "tag": self.tag,
+            return {"status": self.get_status(),
                     "kernelDone": self.get_kernel_status(),
                     "rootfsDone": self.get_rootfs_status(),
                     "kernelPath": self.get_kernel_path(),
@@ -457,7 +359,6 @@ class ExtractionItem(object):
         self.temp = tempfile.mkdtemp()
 
         try:
-            self.printf(">> Tag: %s" % self.tag)
             self.printf(">> Temp: %s" % self.temp)
             self.printf(">> Status: Kernel: %s, Rootfs: %s, Do_Kernel: %s, \
                 Do_Rootfs: %s" % (self.get_kernel_status(),
@@ -473,7 +374,7 @@ class ExtractionItem(object):
                 if analysis():
                     if self.update_status():
                         self.printf(">> Skipping: completed!")
-                        return {"status": True, "tag": self.tag,
+                        return {"status": True,
                                 "kernelDone": self.get_kernel_status(),
                                 "rootfsDone": self.get_rootfs_status(),
                                 "kernelPath": self.get_kernel_path(),
@@ -482,7 +383,7 @@ class ExtractionItem(object):
         except Exception:
             traceback.print_exc()
 
-        return {"status": False, "tag": self.tag,
+        return {"status": False,
                 "kernelDone": self.get_kernel_status(),
                 "rootfsDone": self.get_rootfs_status(),
                 "kernelPath": self.get_kernel_path(),
@@ -568,7 +469,7 @@ class ExtractionItem(object):
                         Extractor.io_dd(self.item, kernel_offset,
                                         kernel_size, tmp_path)
                         kernel = ExtractionItem(self.extractor, tmp_path,
-                                                self.depth, self.tag)
+                                                self.depth, self.output)
 
                         return kernel.extract()
                 # elif "RAMDisk Image" in entry.description:
@@ -615,7 +516,7 @@ class ExtractionItem(object):
                     Extractor.io_dd(self.item, kernel_offset, kernel_size,
                                     tmp_path)
                     kernel = ExtractionItem(self.extractor, tmp_path,
-                                            self.depth, self.tag)
+                                            self.depth, self.output)
                     kernel.extract()
 
                     tmp_fd, tmp_path = tempfile.mkstemp(dir=self.temp)
@@ -623,7 +524,7 @@ class ExtractionItem(object):
                     Extractor.io_dd(self.item, rootfs_offset, rootfs_size,
                                     tmp_path)
                     rootfs = ExtractionItem(self.extractor, tmp_path,
-                                            self.depth, self.tag)
+                                            self.depth, self.output)
                     rootfs.extract()
 
                     return self.update_status()
@@ -637,8 +538,6 @@ class ExtractionItem(object):
         if not self.get_kernel_status():
             for entry in runBinwalk(self.item, includeSignatures=kernelSignatures):
                 if "kernel version" in entry.description or "Linux version" in entry.description:
-                    self.update_database("kernel_version",
-                                            entry.description)
                     if "Linux" in entry.description:
                         kernel_path = self.get_kernel_path()
                         if kernel_path is not None:
@@ -749,7 +648,7 @@ class ExtractionItem(object):
                                                           os.path.join(root,
                                                                        filename),
                                                           self.depth + 1,
-                                                          self.tag)
+                                                          self.output)
                                 if new_item.extract()["status"]:
                                     # check that we are actually done before
                                     # performing early termination. for example,
@@ -761,34 +660,30 @@ class ExtractionItem(object):
         return False
 
 def extract(input_file, output_dir=None, filesystem=True, kernel=True,
-            numproc=False, brand=None, sqlIP=None,  sqlPort=5432, quiet=False) -> list[dict[str, bool | str | None]]:
+            numproc=False, quiet=False) -> list[dict[str, bool | str | None]]:
     """
     Extracts the kernel and root filesystem from a given input file or
     directory to the specified output directory.
-    
+
     :param input_file: Path to the input file or directory.
     :param output_dir: Path to the output directory where extracted files will
         be saved. If None, no output directory is created.
     :param filesystem: Whether to extract the root filesystem.
     :param kernel: Whether to extract the kernel.
     :param numproc: Whether to use multiprocessing for extraction.
-    :param brand: Brand of the firmware image.
-    :param sqlIP: Hostname of the SQL server to store extraction details.
-    :param sqlPort: Port of the SQL server.
-    :param quiet: If True, suppresses output messages.  
-    
+    :param quiet: If True, suppresses output messages.
+
     :return: A list of dictionaries containing extraction results, each with
         keys:
         - status: True if extraction is complete, False otherwise
-        - tag: Unique identifier for the extraction item
         - kernelDone: True if kernel extraction is complete or not requested, False otherwise
         - rootfsDone: True if root filesystem extraction is complete or not requested, False otherwise
         - kernelPath: Path to the extracted kernel file, or None if not extracted
         - rootfsPath: Path to the extracted root filesystem file, or None if not extracted
-    
+
     """
     extractor = Extractor(input_file, output_dir, filesystem, kernel, numproc,
-                          sqlIP, brand, sqlPort, quiet)
+                          quiet)
     return extractor.extract()
 
 def main():
@@ -797,10 +692,6 @@ def main():
     parser.add_argument("input", action="store", help="Input file or directory")
     parser.add_argument("output", action="store", nargs="?", default="images",
                         help="Output directory for extracted firmware")
-    parser.add_argument("-sql ", dest="sql", action="store", default=None,
-                        help="Hostname of SQL server")
-    parser.add_argument("-p", "--port", dest="port", action="store",
-                        default=5432, type=int, help="Port of SQL server")
     parser.add_argument("-nf", dest="rootfs", action="store_false",
                         default=True, help="Disable extraction of root \
                         filesystem (may decrease extraction time)")
@@ -810,15 +701,12 @@ def main():
     parser.add_argument("-np", dest="parallel", action="store_false",
                         default=True, help="Disable parallel operation \
                         (may increase extraction time)")
-    parser.add_argument("-b", dest="brand", action="store", default=None,
-                        help="Brand of the firmware image")
     parser.add_argument("-q", "--quiet", dest="quiet", action="store_true",
                         default=False, help="Suppress output messages")
     result = parser.parse_args()
 
     extract = Extractor(result.input, result.output, result.rootfs,
-                        result.kernel, result.parallel, result.sql,
-                        result.brand, result.port, result.quiet)
+                        result.kernel, result.parallel, result.quiet)
     extract.extract()
 
 if __name__ == "__main__":
