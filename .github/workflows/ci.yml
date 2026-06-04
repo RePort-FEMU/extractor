@@ -68,7 +68,7 @@ jobs:
               input_path = f.name
 
           outdir = tempfile.mkdtemp()
-          results = extract(input_path, output_dir=outdir, kernel=False, quiet=True)
+          results = extract(input_path, output_dir=outdir, kernel=False)
 
           assert len(results) == 1, f"Expected 1 result, got {len(results)}"
           result = results[0]

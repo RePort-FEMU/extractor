@@ -45,7 +45,7 @@ class Extractor(object):
     visited_lock = multiprocessing.Lock()
 
     def __init__(self, indir, outdir=None, rootfs=True, kernel=True,
-                 numproc=True, quiet=False):
+                 numproc=True):
         # Input firmware update file or directory
         self._input = os.path.abspath(indir)
         # Output firmware directory
@@ -65,8 +65,6 @@ class Extractor(object):
 
         # List of items to extract
         self._list = list()
-        
-        self.quiet = quiet
 
     def __getstate__(self):
         """
@@ -262,12 +260,8 @@ class ExtractionItem(object):
             Extractor.io_rm(self.temp)
 
     def printf(self, fmt, level=logging.INFO):
-        """
-        Prints output string with appropriate depth indentation.
-        """
-        if self.extractor.quiet:
-            return
-        logger.log(level, "%s%s", "\t" * self.depth, fmt)
+        prefix = f"[depth={self.depth}] " if self.depth > 0 else ""
+        logger.log(level, "%s%s", prefix, fmt)
 
 
     def get_kernel_status(self):
@@ -321,7 +315,7 @@ class ExtractionItem(object):
         Perform the actual extraction of firmware updates, recursively. Returns
         True if extraction complete, otherwise False.
         """
-        self.printf("\n" + self.item.encode("utf-8", "replace").decode("utf-8"))
+        self.printf("Processing: %s" % self.item.encode("utf-8", "replace").decode("utf-8"))
 
         # check if item is complete
         if self.get_status():
@@ -663,7 +657,7 @@ class ExtractionItem(object):
         return False
 
 def extract(input_file, output_dir=None, filesystem=True, kernel=True,
-            numproc=False, quiet=False) -> list[dict[str, bool | str | None]]:
+            numproc=False) -> list[dict[str, bool | str | None]]:
     """
     Extracts the kernel and root filesystem from a given input file or
     directory to the specified output directory.
@@ -674,7 +668,6 @@ def extract(input_file, output_dir=None, filesystem=True, kernel=True,
     :param filesystem: Whether to extract the root filesystem.
     :param kernel: Whether to extract the kernel.
     :param numproc: Whether to use multiprocessing for extraction.
-    :param quiet: If True, suppresses output messages.
 
     :return: A list of dictionaries containing extraction results, each with
         keys:
@@ -685,8 +678,7 @@ def extract(input_file, output_dir=None, filesystem=True, kernel=True,
         - rootfsPath: Path to the extracted root filesystem file, or None if not extracted
 
     """
-    extractor = Extractor(input_file, output_dir, filesystem, kernel, numproc,
-                          quiet)
+    extractor = Extractor(input_file, output_dir, filesystem, kernel, numproc)
     return extractor.extract()
 
 def main():
@@ -717,7 +709,7 @@ def main():
         logger.setLevel(logging.WARNING)
 
     extract = Extractor(result.input, result.output, result.rootfs,
-                        result.kernel, result.parallel, result.quiet)
+                        result.kernel, result.parallel)
     extract.extract()
 
 if __name__ == "__main__":
