@@ -255,16 +255,16 @@ class ExtractionItem(object):
 
     def __del__(self):
         if self.temp:
-            self.printf(">> Cleaning up %s..." % self.temp)
+            self.printf(">> Cleaning up %s..." % self.temp, logging.DEBUG)
             Extractor.io_rm(self.temp)
 
-    def printf(self, fmt):
+    def printf(self, fmt, level=logging.INFO):
         """
         Prints output string with appropriate depth indentation.
         """
         if self.extractor.quiet:
             return
-        logger.debug("%s%s", "\t" * self.depth, fmt)
+        logger.log(level, "%s%s", "\t" * self.depth, fmt)
 
 
     def get_kernel_status(self):
@@ -329,16 +329,16 @@ class ExtractionItem(object):
 
         # check if exceeding recursion depth
         if self.depth > ExtractionItem.RECURSION_DEPTH:
-            self.printf(">> Skipping: recursion depth %d" % self.depth)
+            self.printf(">> Skipping: recursion depth %d" % self.depth, logging.DEBUG)
             return {"status": self.get_status(), "kernelDone": self.get_kernel_status(),
                     "rootfsDone": self.get_rootfs_status(), "kernelPath": self.get_kernel_path(),
                     "rootfsPath": self.get_rootfs_path()}
 
         # check if checksum is in visited set
-        self.printf(">> MD5: %s" % self.checksum)
+        self.printf(">> MD5: %s" % self.checksum, logging.DEBUG)
         with Extractor.visited_lock:
             if self.checksum in self.extractor.visited:
-                self.printf(">> Skipping: %s..." % self.checksum)
+                self.printf(">> Skipping: %s..." % self.checksum, logging.DEBUG)
                 return {"status": self.get_status(),
                         "kernelDone": self.get_kernel_status(),
                         "rootfsDone": self.get_rootfs_status(),
@@ -359,12 +359,12 @@ class ExtractionItem(object):
         self.temp = tempfile.mkdtemp()
 
         try:
-            self.printf(">> Temp: %s" % self.temp)
+            self.printf(">> Temp: %s" % self.temp, logging.DEBUG)
             self.printf(">> Status: Kernel: %s, Rootfs: %s, Do_Kernel: %s, \
                 Do_Rootfs: %s" % (self.get_kernel_status(),
                                   self.get_rootfs_status(),
                                   self.extractor.do_kernel,
-                                  self.extractor.do_rootfs))
+                                  self.extractor.do_rootfs), logging.DEBUG)
 
             for analysis in [self._check_archive, self._check_encryption, self._check_firmware,
                              self._check_kernel, self._check_rootfs,
@@ -402,7 +402,7 @@ class ExtractionItem(object):
                                        "application/pdf",
                                        "application/msword",
                                        "image/", "text/", "video/"]):
-            self.printf(">> Skipping: %s..." % filetype)
+            self.printf(">> Skipping: %s..." % filetype, logging.DEBUG)
             return True
 
         # Next, check for specific file types that have MIME-type
@@ -410,13 +410,13 @@ class ExtractionItem(object):
         filetype = Extractor.magic(self.item.encode("utf-8", "surrogateescape"))
         if any(s in filetype for s in ["executable", "universal binary",
                                        "relocatable", "bytecode", "applet"]):
-            self.printf(">> Skipping: %s..." % filetype)
+            self.printf(">> Skipping: %s..." % filetype, logging.DEBUG)
             return True
 
         # Finally, check for specific file extensions that would be incorrectly
         # identified
         if self.item.endswith(".dmg"):
-            self.printf(">> Skipping: %s..." % (self.item))
+            self.printf(">> Skipping: %s..." % (self.item), logging.DEBUG)
             return True
 
         return False
@@ -619,7 +619,7 @@ class ExtractionItem(object):
                     return True
                 else:
                     count = 0
-                    self.printf(">> Recursing into %s ..." % entry.extractionDetails.outputDir)
+                    self.printf(">> Recursing into %s ..." % entry.extractionDetails.outputDir, logging.DEBUG)
                     for root, _, files in os.walk(entry.extractionDetails.outputDir):
                         # sort both descending alphabetical and increasing
                         # length
@@ -640,7 +640,7 @@ class ExtractionItem(object):
                         for filename in files:
                             if count > ExtractionItem.RECURSION_BREADTH:
                                 self.printf(">> Skipping: recursion breadth %d"\
-                                    % ExtractionItem.RECURSION_BREADTH)
+                                    % ExtractionItem.RECURSION_BREADTH, logging.DEBUG)
                                 self.terminate = True
                                 return True
                             else:
@@ -704,6 +704,14 @@ def main():
     parser.add_argument("-q", "--quiet", dest="quiet", action="store_true",
                         default=False, help="Suppress output messages")
     result = parser.parse_args()
+
+    if not result.quiet:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+    else:
+        logger.setLevel(logging.WARNING)
 
     extract = Extractor(result.input, result.output, result.rootfs,
                         result.kernel, result.parallel, result.quiet)
