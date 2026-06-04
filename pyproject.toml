@@ -9,9 +9,11 @@ description = "Firmware extraction tool using Rust binwalk bindings"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-    "psycopg2-binary>=2.9.10",
     "python-magic>=0.4.27",
 ]
+
+[tool.system-dependencies]
+apt = ["libmagic1"]
 
 [tool.maturin]
 module-name = "femu_extractor._lib"

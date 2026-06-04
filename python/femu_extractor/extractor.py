@@ -14,7 +14,6 @@ import os
 from stat import S_ISREG
 import shutil
 import tempfile
-import traceback
 
 import magic
 
@@ -213,8 +212,12 @@ class Extractor(object):
         Wrapper function that creates an ExtractionItem and calls the extract()
         method.
         """
-
-        return ExtractionItem(self, path, 0).extract()
+        try:
+            return ExtractionItem(self, path, 0).extract()
+        except Exception:
+            logger.exception("Failed to process %s", path)
+            return {"status": False, "kernelDone": False, "rootfsDone": False,
+                    "kernelPath": None, "rootfsPath": None}
 
 class ExtractionItem(object):
     """
@@ -381,7 +384,7 @@ class ExtractionItem(object):
                                 "rootfsPath": self.get_rootfs_path()}
 
         except Exception:
-            traceback.print_exc()
+            logger.exception("Unhandled exception while processing %s", self.item)
 
         return {"status": False,
                 "kernelDone": self.get_kernel_status(),
