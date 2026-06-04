@@ -34,7 +34,7 @@ jobs:
         run: pip install . --no-build-isolation
 
       - name: Install remaining dependencies
-        run: pip install python-magic psycopg2-binary
+        run: pip install python-magic
 
       - name: Smoke test - import and scan
         run: |
@@ -72,9 +72,10 @@ jobs:
 
           assert len(results) == 1, f"Expected 1 result, got {len(results)}"
           result = results[0]
-          assert "tag" in result
           assert "status" in result
+          assert "kernelDone" in result
+          assert "rootfsDone" in result
 
-          print(f"OK: extraction result: status={result['status']} tag={result['tag']}")
+          print(f"OK: extraction result: status={result['status']} kernelDone={result['kernelDone']} rootfsDone={result['rootfsDone']}")
           os.unlink(input_path)
           EOF
