@@ -13,11 +13,9 @@ dependencies = [
 ]
 
 [tool.system-dependencies]
-# libmagic1: python-magic. unrar: binwalk's RAR extractor. sleuthkit: provides
-# tsk_recover, binwalk's EXT filesystem extractor. RAR and EXT extraction are
-# handled natively by the bundled binwalk engine once these tools are on PATH;
-# no Python-side extraction is required for them.
-apt = ["libmagic1", "unrar", "sleuthkit"]
+# libmagic1t64: python-magic. sleuthkit: provides tsk_recover, binwalk's EXT
+# filesystem extractor. unrar: binwalk's RAR extractor
+apt = ["libmagic1t64", "unrar", "sleuthkit"]
 
 [tool.maturin]
 module-name = "femu_extractor._lib"
