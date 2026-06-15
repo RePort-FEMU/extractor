@@ -13,6 +13,8 @@ import multiprocessing
 import os
 from stat import S_ISREG
 import shutil
+import struct
+import subprocess
 import tempfile
 
 import magic
@@ -27,6 +29,18 @@ rootfsSignatures = ["cramfs", "ext", "fat", "jffs2", "romfs", "yaffs", "apfs", "
 ubiSignatures    = ["ubi", "ubifs"]
 compressedSignatures = ["zstd", "zlib", "xz", "gzip", "bzip2", "lzop", "lzma", "lzfse", "lz4", "compressd"]
 archiveSignatures = ["zip", "rar", "tarball", "cab", "cpio", "7zip"]
+
+# SquashFS superblock magic variants. The Rust binwalk only recognizes the
+# little-endian "hsqs" magic of standard SquashFS 4.0, so big-endian and
+# LZMA-patched images produced by Realtek/Atheros SDKs (sqsh/tqsh/sqlz, plus
+# the 16-bit-swapped shsq/qshs) are never emitted as squashfs entries even
+# though sasquatch can extract them. These drive the last-resort fallback.
+squashfsMagics = [b"hsqs", b"sqsh", b"shsq", b"qshs", b"tqsh", b"sqlz"]
+
+# Don't byte-scan items larger than this for squashfs magic. Genuine root
+# filesystems are well under this; the cap bounds cost on large recursive
+# images where every decompressed blob would otherwise be rescanned.
+SQUASHFS_SCAN_MAX_SIZE = 64 * 1024 * 1024
 
 class Extractor(object):
     """
@@ -365,6 +379,7 @@ class ExtractionItem(object):
 
             for analysis in [self._check_archive, self._check_encryption, self._check_firmware,
                              self._check_kernel, self._check_rootfs,
+                             self._check_squashfs_fallback,
                              self._check_compressed]:
 
                 # Update status only if analysis changed state
@@ -561,17 +576,78 @@ class ExtractionItem(object):
                 if entry.extractionDetails and entry.extractionDetails.success:
                     unix = Extractor.io_find_rootfs(entry.extractionDetails.outputDir)
 
-                    if not unix[0]:
-                        return False
+                    if unix[0]:
+                        return self._found_rootfs(unix[1])
 
-                    self.printf(">>>> Found Linux filesystem in %s!" % unix[1])
-                    if self.output:
-                        shutil.make_archive(self.output, "gztar",
-                                            root_dir=unix[1])
-                    else:
-                        self.extractor.do_rootfs = False
-                    return True
+                # SquashFS fallback: sasquatch mis-detects endianness on some
+                # standard little-endian SquashFS 4.0 / XZ images and aborts
+                # with a bogus corruption error, so the extraction above either
+                # failed or produced no valid root. Carve from the entry offset
+                # and let stock unsquashfs (or sasquatch) have a go.
+                if "SquashFS" in entry.description:
+                    rootfs = self._carve_and_unsquash(self.item, entry.offset)
+                    if rootfs:
+                        return self._found_rootfs(rootfs)
         return False
+
+    def _found_rootfs(self, rootfs_dir):
+        """
+        Record a successfully extracted root filesystem: archive it to the
+        output prefix (matching the other rootfs paths) or, when running
+        without an output directory, flag the rootfs as done. Always returns
+        True.
+        """
+        self.printf(">>>> Found Linux filesystem in %s!" % rootfs_dir)
+        if self.output:
+            shutil.make_archive(self.output, "gztar", root_dir=rootfs_dir)
+        else:
+            self.extractor.do_rootfs = False
+        return True
+
+    def _carve_and_unsquash(self, src, offset):
+        """
+        Carve a SquashFS image starting at `offset` (to EOF) out of `src`, then
+        try sasquatch followed by stock unsquashfs to extract it. Returns the
+        extracted rootfs directory if io_find_rootfs validates it, otherwise
+        None (which also rejects false-positive magic hits inside compressed
+        data).
+        """
+        size = os.path.getsize(src) - offset
+        if size <= 0:
+            return None
+
+        tmp_fd, carved = tempfile.mkstemp(dir=self.temp)
+        os.close(tmp_fd)
+        Extractor.io_dd(src, offset, size, carved)
+
+        # -no-xattrs is required: writing e.g. security.selinux fails with
+        # "Operation not permitted" in the unprivileged container.
+        attempts = (
+            ("sasquatch", ["sasquatch", "-no-xattrs", "-d", None, carved]),
+            ("unsquashfs", ["unsquashfs", "-no-xattrs", "-d", None,
+                            "-no-progress", carved]),
+        )
+        for name, argv in attempts:
+            outdir = tempfile.mkdtemp(dir=self.temp)
+            # Both tools create the destination themselves; hand them a fresh,
+            # non-existent path.
+            os.rmdir(outdir)
+            argv = [outdir if a is None else a for a in argv]
+            try:
+                subprocess.run(argv, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=600,
+                               check=False)
+            except (subprocess.SubprocessError, OSError) as err:
+                self.printf(">> %s failed at 0x%x: %s" % (name, offset, err),
+                            logging.DEBUG)
+                continue
+            if os.path.isdir(outdir):
+                unix = Extractor.io_find_rootfs(outdir)
+                if unix[0]:
+                    self.printf(">> %s extracted rootfs at 0x%x" %
+                                (name, offset), logging.DEBUG)
+                    return unix[1]
+        return None
 
     def _check_compressed(self):
         """
@@ -579,6 +655,57 @@ class ExtractionItem(object):
         its contents.
         """
         return self._check_recursive(compressedSignatures)
+
+    @staticmethod
+    def _valid_squashfs_superblock(data, offset):
+        """
+        Cheap, version- and endian-agnostic sanity check for a SquashFS
+        superblock at `offset` in `data`. SquashFS 2.x/3.x/4.x all carry the
+        format version as a u16 s_major (1-4) at byte +28, followed by a small
+        u16 s_minor. Verifying this rejects the overwhelming majority of random
+        4-byte magic collisions inside compressed data before the expensive
+        carve-and-extract, while still accepting big-endian sqsh and LZMA
+        sqlz/tqsh images. Returns True if either endianness looks plausible.
+        """
+        if offset + 32 > len(data):
+            return False
+        for endian in ("<", ">"):
+            s_major, s_minor = struct.unpack_from(endian + "HH", data,
+                                                  offset + 28)
+            if 1 <= s_major <= 4 and s_minor <= 15:
+                return True
+        return False
+
+    def _check_squashfs_fallback(self):
+        """
+        Last-resort root filesystem recovery for SquashFS variants the Rust
+        binwalk does not detect (big-endian sqsh, LZMA sqlz/tqsh, and the
+        byte-swapped shsq/qshs). Scan the raw item bytes for any known SquashFS
+        magic and, for each plausible superblock, carve and try sasquatch then
+        unsquashfs. Only runs when the rootfs is still missing.
+        """
+        if self.get_rootfs_status():
+            return False
+
+        # Cost guard: don't byte-scan giant items (e.g. large decompressed XZ
+        # blobs encountered during recursion).
+        if os.path.getsize(self.item) > SQUASHFS_SCAN_MAX_SIZE:
+            return False
+
+        with open(self.item, "rb") as fp:
+            data = fp.read()
+
+        for magic in squashfsMagics:
+            idx = data.find(magic)
+            while idx >= 0:
+                if self._valid_squashfs_superblock(data, idx):
+                    self.printf(">>>> Found %s SquashFS magic at 0x%x" %
+                                (magic.decode("latin-1"), idx), logging.DEBUG)
+                    rootfs = self._carve_and_unsquash(self.item, idx)
+                    if rootfs:
+                        return self._found_rootfs(rootfs)
+                idx = data.find(magic, idx + 1)
+        return False
 
     # treat both archived and compressed files using the same pathway. this is
     # because certain files may appear as e.g. "xz compressed data" but still
@@ -607,13 +734,7 @@ class ExtractionItem(object):
 
                 # check for extracted filesystem, otherwise update queue
                 if unix[0]:
-                    self.printf(">>>> Found Linux filesystem in %s!" % unix[1])
-                    if self.output:
-                        shutil.make_archive(self.output, "gztar",
-                                            root_dir=unix[1])
-                    else:
-                        self.extractor.do_rootfs = False
-                    return True
+                    return self._found_rootfs(unix[1])
                 else:
                     count = 0
                     self.printf(">> Recursing into %s ..." % entry.extractionDetails.outputDir, logging.DEBUG)
